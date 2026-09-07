@@ -1,0 +1,206 @@
+DB Schema{
+// Whenever InstallationDate is null use a trigger to create an operation
+
+Pumps Table [
+Id: PK, auto increment
+Model:
+SerialNumber: unique
+NodeId: FK → Nodes(Id)
+PowerKw: decimal
+MaxFlowRateLps: decimal
+Status: enum (Online, Offline, Maintenance, Fault)
+InstallationDate: nullable
+]
+
+Nodes Table [
+Id: PK, auto increment
+Code: unique
+Latitude: decimal
+Longitude: decimal
+Status: enum (Online, Offline, Maintenance, Fault)
+InstallationDate: nullable
+]
+
+Pipes [
+Id: PK, auto increment
+Code: unique
+NodeA: FK → Nodes(Id)
+NodeB: FK → Nodes(Id)
+CrossSection: decimal
+Length: decimal
+Status: enum (Online, Offline, Maintenance, Fault)
+InstallationDate: nullable
+]
+
+==NewClient()
+==DeleteClient() // Actually means contract end so Meter is flagged for Removal and Billing and Readings are stopped
+Clients Table [
+Id: unique, auto increment
+Name: (company name or client full name)
+City:
+ZIPCode:
+Address:
+Phone:
+Email: unique
+]
+
+==NewContract()
+==CloseContract()
+Contracts Table [
+Id: unique, auto increment
+Client: reference to Clients Table
+City:
+ZIPCode:
+Address:
+ClientType: enum (more scalable probably)(Civil, Company(or Industrial), (maybe others such as idk?)) or bool (Named IndustrialClient)
+MeterId: unique, reference to meters table
+(should work fine)EnstablishedBillCost: nullable (The constant amount of money an industrial non-metered client should pay monthly or periodically)
+(i'd like a better way)BillingPeriod: nullable (if a non-metered contract is active automatically make a Bill or Issue a Reading Operation)
+AllocatedFlowrate: nullable (if null default to some L/s, used in total waterflow costs calculation)
+ContractIssueDate:
+ContractEndDate: nullable (if null contract is still valid and so is meters) (if set use a Trigger that disconnects the meter)
+]
+
+==IssueOperation()
+==CompleteOperation()
+Operations Table [
+Id: unique, auto increment
+Type: enum (Repair, Replace, Attach, Detach, Install, Remove)
+TargetType: enum (Meter, Pump, Node, Pipe)
+TargedId: reference to Meters, Pipes, Nodes and Valves (idk how to implement it(i have an idea))
+IssueDate: generate at instancing (row creation)
+CompletionDate: nullable (if null not fixed) (on being set a trigger will free the Assigned Technicians (finds them by id))
+Description: nullable
+OperationCost: nullable (if NULL it was either maintenance or there was no changed part, should be set otherwise, 0 is also allowed, although it should not be negative, whhen doing a summary of expenses consider only operations with CompletionDate set (should i consider the fuel cost?))
+Priority: nullable, number or enum (Urgent, Normal, etc.) or (Grid Emergency(automatically issued on grid component fault), Grid Maintenance(manually issued), Reading(if enabled automatically ))
+(maybe)RequiredTechnicians: nullable (if set automatically allocate the first RequiredTechnicians amount of technicians available)
+]
+
+==AssignTechnician() // should be ran automatically if automatic allocation is active
+==FreeTechnician() trigger on operation completion for all assigned technicians
+// Maybe implement a Technicians Report View with all the performance of the technicians, such as Average Operation Time, Operations Count and so on
+TechnicianTasks Table [
+(Possibly unneded)Id: unique, auto increment
+Operation: reference to Operations Table
+Technician: reference to Technicians Table
+AssignmentDate: (set at instancing)
+ReleaseDate: nullable (if set operation was completed)
+]
+
+==NewMeter()
+==DisconnectMeter()
+Meters Table [
+Id: unique, auto increment
+SerialNumber: unique
+MeterType: (better for scalability)enum (Smart, Manual, Non-Metered) (or change to bool SmartMeter)
+AttachedTo: reference to Pipes Table (determines where a Client is connected, be it a metered or non-metered contract)
+Status: enum (Ok, Fault, Disconnected) (disconnected can trigger if overdue lasts at least 3 months or if contract with client is terminated)
+InstallationDate: nullable (if null and status is Disconnected send a fault so a technician will install it (use a trigger to make an issue automatically))
+]
+
+==NewTechnician()
+==ResignTechnician()
+==ReEmployTechnician() // Set EmploymentDate to instancing date or 
+==AssignToOperation()
+==ClockIn()
+==ClockOut()
+Technicians Table [
+Id: unique, auto increment
+Fullname:
+FiscalCode: unique
+IBAN:
+Wage: (Every month trigger a payment and subtract the sum of Wages and the sum of OperationCosts from the sum of paid Bills (Bills with PaymentDate set))
+EmploymentDate:
+ResignmentDate: nullable (employed if unset)
+]
+
+// Each month instance a Salary for every Technician
+Salaries Table [
+Id: unique, auto increment
+Technician: reference to Technicians Table
+WageAmount: (set to current wage amount, exists because an Technician might have a different salary overtime)
+PaymentDate:
+]
+
+==NewReading()
+Readings Table [
+Id: unique, auto increment
+MeterId: reference to Meters Table
+Volume: (maybe) (the volume of the reading is to be subtracted from the previous during the billing)
+TimePeriod: (amount of time between this and the last measurement, automatically calculated on instancing)
+Technician: nullable, reference to Technicians Table Date (if null and Meter Type is smart the reading is automatic else a Technician did a manual reading on an automatic Meter i guess? also if Meter Type is Manual and Technician is null it should be invalid)
+]
+
+//Whenever a Reading is saved automatically generate a bill
+==NewBill()
+==BillNonMeteredClient()
+==StoreBillPayment()
+(associated to Meters Table probably, maybe)==DisconnectMeter()
+(associated to Meters Table probably, maybe)==ConnectMeter()
+Bills Table [
+Id: unique, auto increment
+Reading: nullable, unique, reference to Readings Table (if NULL contract is non-metered, get payment amount and charge it)
+Contract: reference to Clients Tables
+BillAmount: (calculate with progressive taxation if Meter is manual or automatic)
+(redundant, will probably be eliminated)Status: enum (Paid, Overdue, AwaitingPayment)
+IssuingDate:
+DueDate: (Depends on the client, if the client has some particular conditions set it in a different way, otherwise there should be a standard amount, the DueDate should be about 1-3 months from the IssuingDate)
+PaymentDate: nullable (if DueDate is reached and PaymentDate is unset increase cost, if PaymentDate is still null after 3 months from the DueDate, issue a Detach Operation and when completed set corresponding Meter Status to Disconnected, if payment is later made issue an Attach Operation that when completed sets Meter Status to Ok, check payments statuses every day)
+]
+
+// Contains thresholds for tax increases
+Progressive Taxation Table [
+id: unique, auto increment
+MinimumVolume: unique (a MaximumVolume is not needed since if the MinimumVolume of the highest Progressive Taxation Table row is exceeded it'll prevail automatically)
+PricePerCubicMeter:
+]
+
+//Technically made of always one row, no more than that
+(hardly maybe? really hardly) Settings Table [
+DisconnectionTimeThreshold: (how much time needs to pass for water supply to be disconnected)
+CivilDefaultFlowrate: (flowrate of civil clients(where the AllocatedFlowrate column is null))
+MaxAllowedFlowrateBottleneck: (Max amount (% percentile) of flowrate deficiency for supply pumps allowed, for example 5 pumps are capable of 20kL/s but the grid requires 24kL/s, since hardly every consumer will use all of their allocated flowrate about 15%-20% of tolerance is allowable)
+(maybe?) TechnicianMeasurementOperationsLimit: (Max amount of Measurement Operations a Technician can take)
+]
+}
+
+
+Views {
+Total Flowrate per Client view
+Total Flowrate view (Shows Total Pump Flowrate and Total Civil and Industrial Clients Flowrate (3 entries, pump, industrial, civil)
+Clients Average Consumption View (Either contracts or clients or both)
+Clients Contracts
+See Monthly (or in a time period) Expenses (either positive or negative, such as Gains and Losses)
+See Total Expenses (How do i know the amount of Saved Money or the currently available Money? How do i keep track if i have initial money or an investment?)
+See Technicians Wages
+See Total Money Spent on Technicians' Wages
+See Total Operation Expenses
+See Monthly Operation Expenses
+See Amount of Operations per Month and Total Operation Expenses
+See Amount of Operations per Month and Total Operation Expenses (Separated By Type, like Maintenance, Installation, etc.)
+See Average Clients' Payment Puntuality (how much time between Bill IssueDate and PaymentDate of all Contracts)
+See Total Amount of Money Paid from a Client (also Contract)
+See Monthly Amount Paid from a Client (total of paid Bills of all contracts)
+}
+
+
+Triggers {
+Whenever a row in the Nodes, Pumps, Pipes, Meters tables has its Status is set to 'Fault' or 'Maintenance' issue an Operation with the corresponding TargetType and TargetId, empty Description, Priority of 'Emergency' for Pumps, Nodes or Pipes and 'Normal' for Meters, set RequiredTechnicians to about 2-4 for Pumps, 2 for Nodes and Pipes and 1 for Readings.
+Whenever a row in the Nodes, Pumps, Pipes, Meters tables has its Status is set to 'Online' or 'Disconnected' from either 'Fault', 'Disconnected' or 'Maintenance' set the CompletionDate of the Operation which was issued from the change of the State to 'Fault' or 'Maintenance' to current time.
+Whenever a row in the Nodes, Pumps, Pipes, Meters tables has its Status is set to 'Online' from 'Install' set the InstallationDate to Current Time.
+Whenever a row in the Nodes, Pumps, Pipes, Meters is instanced and its Status is set to 'Install' issue an 'Install' Operation with Priority dependant on Type, for Pumps 'Urgent', for Nodes, Pipes and Meters Important, also depending on the Type RequiredTechnicians should be in order, 4, 2 and 1 Technicians.
+Whenever a row in the Operations Table has its CompletionDate set, set every TechnicianTasks' ReleaseDate associated with the finished Operation to the Current Time.
+Whenever a Contract is made instance a new Meter with a random(for now and example purposes SerialNumber) and MeterType set to either 'Smart' or 'NotPresent' depending if the contract is either 'Civil'/'Industrial' or 'NonMetered'.
+Whenever a Reading is created automatically make a Bill, the Reading points to the same Reading causing the Trigger, the Contract points to the Contract which references the Meter, if the Contract is Metered calculate the price based on the Reading and ProgressiveTaxation, if Non-Metered set price to the EnstablishedBillCost in Contracts, set DueDate to Current Date + 1 Month.
+Whenever a Bill gets paid check if said Bill is overdue to the point the Meter was disconnected issue an 'Attach' Operation, with TargetType 'Meter' and TargetID to the Meter pointed by the Reading, set Priority to 'Normal' and RequiredTechnicians to 1, THIS HAS TO BE DONE ONLY ONCE.
+Whenever a Meter is instanced check Total Flowrate of Meters(Demand) and Pumps(Supply) and if Demand is MaxAllowedFlowrateBottleneck % issue an 'Install' Operation with TargetId and TargetType set to NULL, RequiredTechnicians set to 2-4 (idk how to choose currently) and Priority 'Important'.
+
+(maybe?)Whenever an 'Urgent' Operation is instanced, and AutomaticTechnicianAllocation is true, allocate even Technicians that are busy if there are none available, of course trying to avoid other Technicians busy with other 'Urgent' Operations and not already allocated to the current operation.
+(maybe?)Whenever an Operation is instanced, if AutomaticTechnicianAllocation(in the future i may put a filter on what operations can be automatically allocated) is true, try to instance enough TechnicianTasks to fullfill the RequiredTechnicians count of the Operation, if it's a 'Measurement' check for other Technicians who have other 'Measurement' Tasks, but less than TechnicianMeasurementOperationsLimit, else assign a free Technician(no TechnicianTasks for that Technician with ReleaseDate NULL), DO NOT assign Technicians with Operations different from 'Measurements' to the current Operation.
+}
+
+Routines {
+Every day check the Bills Table for Bills with PaymentDate unset and if DueDate is exceeded increase BillAmount by OverdueDailyBillIncrease if DueDate is exceeded by DisconnectionTimeThreshold do not increase the price any further and issue a 'Detach' Operation, with TargetType 'Meter' and TargetID to the Meter pointed by the Reading, set Priority to 'Normal' and RequiredTechnicians to 1, THIS HAS TO BE DONE ONLY ONCE.
+Every day check if any Contract's BillingPeriod is met, if MeterType is Manual issue a 'Reading' Operation with 'Normal' Priority and RequiredTechnicians set to 1, TargetType set to 'Meter' and TargetId set to MeterId, THIS NEEDS TO BE DONE ONLY ONCE.
+Every Month instance a Salary for every Technician, with WageAmount set to the Wage of the Technician.
+}
